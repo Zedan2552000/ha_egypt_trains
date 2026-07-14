@@ -16,25 +16,33 @@ from .const import DOMAIN, CONF_DEPARTURE, CONF_ARRIVAL
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=30)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up the sensor platform."""
     departure = entry.data.get(CONF_DEPARTURE)
     arrival = entry.data.get(CONF_ARRIVAL)
+    
+    # We will log the URL so the user can see what we're fetching
+    _LOGGER.info(f"Setting up Egypt Trains for {departure} to {arrival}")
 
     async def fetch_train_details(session, train_number):
         """Fetch intermediate stations for a specific train."""
         url = f"https://egytrains.com/train/{train_number}"
         try:
-            async with session.get(url) as response:
+            async with session.get(url, headers=HEADERS, timeout=10) as response:
                 html = await response.text()
-                match = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
+                match = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
                 if match:
                     data = json.loads(match.group(1))
                     cities = data.get("props", {}).get("pageProps", {}).get("data", {}).get("cities", [])
                     return cities
-        except Exception:
-            pass
+        except Exception as e:
+            _LOGGER.error(f"Error fetching train {train_number} details: {e}")
         return []
 
     async def async_update_data():
@@ -42,24 +50,30 @@ async def async_setup_entry(hass, entry, async_add_entities):
         url = f"https://egytrains.com/trains/{departure}/{arrival}"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
+                async with session.get(url, headers=HEADERS, timeout=15) as response:
+                    if response.status != 200:
+                        raise UpdateFailed(f"Failed to fetch data, status code: {response.status}")
+                        
                     html = await response.text()
                     
-                    match = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
+                    match = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
                     if not match:
-                        raise UpdateFailed("Could not find train data on the page.")
+                        raise UpdateFailed("Could not find train data on the page (Regex failed).")
                     
                     data = json.loads(match.group(1))
                     trains_dict = data.get("props", {}).get("pageProps", {}).get("data", {})
                     
                     if not trains_dict:
-                        raise UpdateFailed("No trains found for this route.")
+                        raise UpdateFailed("No trains found for this route in JSON.")
                     
                     all_trains = []
                     for t_id, t_info in trains_dict.items():
                         if isinstance(t_info, dict) and "startTime" in t_info:
                             t_info["train_number"] = t_id
                             all_trains.append(t_info)
+                            
+                    if not all_trains:
+                        raise UpdateFailed("Parsed JSON but found 0 valid trains.")
                     
                     # Sort trains by time
                     def parse_time(t_str):
@@ -90,6 +104,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                     }
 
         except Exception as err:
+            _LOGGER.error(f"Egypt Trains Update Error: {err}")
             raise UpdateFailed(f"Error communicating with API: {err}")
 
     coordinator = DataUpdateCoordinator(
