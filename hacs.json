@@ -1,0 +1,7 @@
+{
+  "name": "Egypt Trains",
+  "render_readme": true,
+  "filename": "egypt_trains.zip",
+  "zip_release": false,
+  "homeassistant": "2023.8.0"
+}
